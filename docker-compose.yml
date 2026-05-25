@@ -1,0 +1,186 @@
+services:
+  # app:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: app
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     - QUARKUS_PROFILE=docker
+  #     - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://app-db:5432/example_quarkus
+  #     - QUARKUS_DATASOURCE_USERNAME=postgres
+  #     - QUARKUS_DATASOURCE_PASSWORD=password
+  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+  #     - OTEL_SERVICE_NAME=example-quarkus-opentelemetry
+  #     - OTEL_RESOURCE_ATTRIBUTES=service.name=example-quarkus-opentelemetry,service.version=1.0.0,deployment.environment=docker
+  #     - OTEL_SERVICE_VERSION=1.0.0
+  #     - OTEL_JFR_ENABLED=true
+  #   depends_on:
+  #     app-db:
+  #       condition: service_started
+  #     otel-collector:
+  #       condition: service_started
+  #   networks:
+  #     - example-quarkus
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080/q/health"]
+  #     interval: 30s
+  #     timeout: 30s
+  #     retries: 5
+  #     start_period: 180s
+
+  app-native:
+    build:
+      context: .
+      dockerfile: Dockerfile.native
+    container_name: app-native
+    ports:
+      - "8080:8080"
+    environment:
+      - QUARKUS_PROFILE=docker
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://app-db:5432/example_quarkus
+      - QUARKUS_DATASOURCE_USERNAME=postgres
+      - QUARKUS_DATASOURCE_PASSWORD=password
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=example-quarkus-opentelemetry-native
+      - OTEL_RESOURCE_ATTRIBUTES=service.name=example-quarkus-opentelemetry-native,service.version=1.0.0,deployment.environment=docker
+      - OTEL_SERVICE_VERSION=1.0.0
+      - OTEL_JFR_ENABLED=true
+    depends_on:
+      app-db:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - example-quarkus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/q/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 180s
+    profiles:
+      - native
+
+  app-db:
+    image: postgres:17-alpine
+    container_name: app-db
+    environment:
+      POSTGRES_DB: example_quarkus
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - example-quarkuse-db-data:/var/lib/postgresql/data
+    networks:
+      - example-quarkus
+
+  redis:
+    image: redis:7.4
+    container_name: redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - example-quarkus
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: redis-server --requirepass dragon_knight
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.74.0
+    container_name: jaeger-ecommerce
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+    networks:
+      - example-quarkus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter-ecommerce
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - "/:/host:ro,rslave"
+    networks:
+      - example-quarkus
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus-ecommerce
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+    networks:
+      - example-quarkus
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-ecommerce
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    networks:
+      - example-quarkus
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+      - "8889:8889"
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    restart: unless-stopped
+    networks:
+      - example-quarkus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:13133/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  loki:
+    container_name: loki_debug
+    image: grafana/loki:3.5.8
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - example-quarkus
+
+volumes:
+  example-quarkuse-db-data:
+  redis_data:
+  loki_data:
+  grafana_data:
+
+networks:
+  example-quarkus:
+    driver: bridge

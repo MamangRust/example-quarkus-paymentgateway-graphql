@@ -1,0 +1,73 @@
+FROM quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21 AS build
+USER root
+
+WORKDIR /app
+
+# Copy Maven files
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN chmod +x mvnw
+
+# Download dependencies
+RUN ./mvnw -B dependency:go-offline || true
+
+# Copy source
+COPY src ./src
+
+# Build native image using Mandrel (optimized for containers)
+RUN ./mvnw package -Pnative -DskipTests -DskipITs -B \
+    -Dquarkus.native.container-build=false
+
+# Optional runtime assets
+RUN mkdir -p /app/runtime-extra && \
+    cp /app/target/classes/*.pem /app/runtime-extra/ 2>/dev/null || true && \
+    cp /app/src/main/resources/import.sql /app/runtime-extra/ 2>/dev/null || true
+
+# Runtime stage
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.4
+LABEL maintainer="example-quarkus-opentelemetry"
+LABEL version="1.0.0"
+LABEL description="Example Quarkus Native application with OpenTelemetry"
+
+# Runtime essentials
+RUN microdnf install -y \
+    ca-certificates \
+    shadow-utils \
+    && microdnf clean all
+
+# Non-root user
+RUN useradd -r -u 1001 -g root app
+
+WORKDIR /app
+
+# Copy native executable
+COPY --from=build --chown=1001:root /app/target/*-runner ./application
+
+# Optional runtime resources
+COPY --from=build --chown=1001:root /app/runtime-extra/ /app/
+
+# Entrypoint
+COPY --chown=1001:root docker-entrypoint-native.sh /usr/local/bin/docker-entrypoint-native.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-native.sh \
+    && chmod +x /app/application \
+    && chown -R 1001:root /app
+
+USER 1001
+EXPOSE 8080
+
+# Environment
+ENV QUARKUS_PROFILE=docker \
+    QUARKUS_OTEL_SERVICE_NAME=example-quarkus-opentelemetry \
+    QUARKUS_OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
+    QUARKUS_OTEL_TRACES_EXPORTER=otlp \
+    QUARKUS_OTEL_METRICS_EXPORTER=otlp \
+    QUARKUS_OTEL_LOGS_EXPORTER=otlp \
+    DATABASE_URL=jdbc:postgresql://postgres:5432/example_quarkus \
+    DATABASE_USERNAME=postgres \
+    DATABASE_PASSWORD=password
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8080/q/health || exit 1
+
+ENTRYPOINT ["docker-entrypoint-native.sh"]
